@@ -1,0 +1,25 @@
+#blog-result label {
+	display: inline;
+}
+
+#blog-result .blog-template {
+	display: none;
+}
+
+input.working {
+	color: gray;
+	padding-right: 20px;
+	background: url('../../../../wp-admin/images/loading-publish.gif') right center no-repeat;
+}
+
+.sitewide-search-admin td {
+	vertical-align: top;
+}
+
+.sitewide-search-admin th label {
+	font-weight: bold;
+}
+
+.sitewide-search-utilites {
+	padding: 0 10px;
+}
