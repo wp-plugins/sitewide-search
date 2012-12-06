@@ -279,12 +279,12 @@ class Sitewide_Search_Admin {
 		check_ajax_referer( 'sitewide-search-populate', 'security' );
 
 		global $wpdb, $sitewide_search;
-		$chunk = 100;
 		$step = array(
 			'blog' => 0,
 			'blog_count' => 0,
 			'post' => 0,
 			'post_count' => 0,
+			'chunk' => 100
 		);
 		$settings = self::get_settings();
 
@@ -350,7 +350,7 @@ class Sitewide_Search_Admin {
 						$wpdb->prepare( $wpdb->posts ),
 						$wpdb->prepare( $step[ 'post' ] ),
 						$wpdb->prepare( sprintf( '"%s"', implode( '","', $settings[ 'post_types' ] ) ) ),
-						$wpdb->prepare( $chunk )
+						$wpdb->prepare( $step[ 'chunk' ] )
 					), OBJECT );
 
 					if( $posts ) {
@@ -403,6 +403,10 @@ class Sitewide_Search_Admin {
 				$step[ 'message' ] = __( 'No blogs found', 'sitewide-search' );
 			}
 		}
+
+		// Clean output buffer so next the json_encode-line is the only 
+		// thing written.
+		ob_clean();
 
 		echo json_encode( $step );
 		// Exit when done and before wordpress or something else prints a zero.
