@@ -2,11 +2,11 @@
 
 /*
 Plugin Name: Sitewide Search
-Plugin URI: https://github.com/klandestino/
-Description: Creates sitewide searching and archive/category/tag/author browsing
-Version: 0.9.3
+Plugin URI: https://github.com/klandestino/sitewide-search
+Description: Creates a multisite searching and archive/category/tag/author browsing
+Version: 0.9.5
 Requires at least: 3.4.2
-Tested up to: 3.5
+Tested up to: 3.5.1
 License: GNU General Public License 2.0 (GPL) http://www.gnu.org/licenses/gpl.html
 Author: spurge
 Author URI: https://github.com/spurge

@@ -62,6 +62,11 @@ class Sitewide_Search {
 	public $current_blog_id = 0;
 
 	/**
+	 * Holder for which blog thumbnail will be fetched from
+	 */
+	public $thumbnail_blog_id = 0;
+
+	/**
 	 * Constructor
 	 */
 	function __construct() {
@@ -80,9 +85,13 @@ class Sitewide_Search {
 		if( $this->settings[ 'archive_blog_id' ] ) {
 			// Handle post saving
 			add_action( 'save_post', array( &$this, 'save_post' ), 1000 );
-			add_action( 'transition_post_status', array( &$this, 'save_post' ), 1000, 2 );
+			add_action( 'transition_post_status', array( &$this, 'save_post' ), 1000 );
 			// Handle taxonomy inserts
-			add_action( 'set_object_terms', array( &$this, 'save_taxonomy' ), 1000, 4 );
+			add_action( 'set_object_terms', array( &$this, 'save_taxonomy' ), 1000 );
+			// Handle meta data
+			add_action( 'added_post_meta', array( &$this, 'save_meta' ), 1000, 2 );
+			add_action( 'updated_post_meta', array( &$this, 'save_meta' ), 1000, 2 );
+			add_action( 'deleted_post_meta', array( &$this, 'save_meta' ), 1000, 2 );
 			// Handle post trashing and deleting
 			add_action( 'trash_post', array( &$this, 'delete_post' ), 1000 );
 			add_action( 'delete_post', array( &$this, 'delete_post' ), 1000 );
@@ -97,9 +106,9 @@ class Sitewide_Search {
 			// Handle post queries
 			// Adds post types and from what blog posts will be fetched
 			add_action( 'pre_get_posts', array( &$this, 'set_post_query' ) );
-			// Return original permalink for posts from archive
+
+			// Correct permalinks if they're fetched from the archive
 			add_filter( 'post_link', array( &$this, 'get_original_permalink' ), 10, 2 );
-			//add_filter( 'get_permalink', array( &$this, 'get_original_permalink' ), 10, 2 );
 		}
 	}
 
@@ -133,10 +142,9 @@ class Sitewide_Search {
 	 * @uses wp_update_post
 	 * @uses wp_inster_post
 	 * @param int $post_id
-	 * @param object $post optional, uses $_POST, $_GET and get_post() as fallbacks and in that order
 	 * @return void
 	 */
-	public function save_post( $post_id, $post = null ) {
+	public function save_post( $post_id ) {
 		global $wpdb;
 
 		// Only if archive blog has been set, current blog hasn't changed to archive blog and this blog is public
@@ -145,15 +153,7 @@ class Sitewide_Search {
 			&& ! $this->current_blog_id
 			&& get_blog_option( get_current_blog_id(), 'public', true )
 		) {
-			// If not $post is defined, let's assume that the post has been posted here.
-			// Otherwise load it with get_post()
-			if( ! is_object( $post ) && array_key_exists( 'post_title', $_POST ) ) {
-				$post = ( object ) $_POST;
-			} elseif( ! is_object( $post ) && array_key_exists( 'post_title', $_GET ) ) {
-				$post = ( object ) $_GET;
-			} elseif( ! is_object( $post ) ) {
-				$post = get_post( $post_id );
-			}
+			$post = get_post( $post_id );
 
 			if( is_object( $post ) ) {
 				// Is this a post?
@@ -172,13 +172,36 @@ class Sitewide_Search {
 						&& ! preg_match( '/^[^0-9]+[0-9]+,[0-9]+$/', $guid )
 					) {
 						$this->current_blog_id = get_current_blog_id();
+						$copy = new stdClass();
 
-						// Clone $post so we don't mess around with wrong instance
-						$copy = clone $post;
+						// Sanitize post input and copy fields
+						$fields = array(
+							'ID',
+							'post_author',
+							'post_date',
+							'post_date_gmt',
+							'post_content',
+							'post_content_filtered',
+							'post_title',
+							'post_excerpt',
+							'post_status',
+							'post_type',
+							'comment_status',
+							'ping_status',
+							'post_password',
+							'post_name',
+							'to_ping',
+							'pinged',
+							'post_modified',
+							'post_modified_gmt',
+							'post_parent',
+							'menu_order',
+							'guid'
+						);
 
-						if( property_exists( $post, 'ID' ) ) {
-							if( $post->ID ) {
-								$post_id = $post->ID;
+						foreach( $fields as $field ) {
+							if( property_exists( $post, $field ) ) {
+								$copy->$field = $post->$field;
 							}
 						}
 
@@ -208,36 +231,35 @@ class Sitewide_Search {
 								$this->current_blog_id,
 								$post_id
 							) );
+							unset( $copy->ID );
+
+							/*
+							 * Inserting data with wpdb instead of wp_insert/update_post.
+							 * In this way we won't get any trouble with data in
+							 * the wrong place when switching blog and running a
+							 * bunch of actions and filters.
+							 */
 
 							// Save post copy in archive blog
 							if( $copy_id ) {
-								$copy->ID = $copy_id;
-								wp_update_post( ( array ) $copy );
+								// The old way
+								//wp_update_post( ( array ) $copy );
+								// The new way
+								$wpdb->update( $wpdb->posts, ( array ) $copy, array( 'ID' => $copy_id ) );
 							} else {
-								unset( $copy->ID );
-								$copy_id = wp_insert_post( ( array ) $copy );
+								// The old way
+								//$copy_id = wp_insert_post( ( array ) $copy );
+								// The new way
+								$wpdb->insert( $wpdb->posts, ( array ) $copy );
 							}
 
 							// Switch back to original blog
 							restore_current_blog();
 							$this->current_blog_id = 0;
 
-							// Get all post terms and save them with $this->save_taxonomy()
-							$terms = wp_get_object_terms( $post_id, $this->settings[ 'taxonomies' ] );
-							$tax = array();
-
-							foreach( $terms as $term ) {
-								if( ! is_array( $tax[ $term->taxonomy ] ) ) {
-									$tax[ $term->taxonomy ] = array( 'terms' => array(), 'term_ids' => array() );
-								}
-
-								$tax[ $term->taxonomy ][ 'terms' ][] = $term->name;
-								$tax[ $term->taxonomy ][ 'term_ids' ][] = $term->term_id;
-							}
-
-							foreach( $tax as $tax_name => $term ) {
-								$this->save_taxonomy( $post_id, $term[ 'terms' ], $terms[ 'term_ids' ], $tax_name );
-							}
+							// Save taxonomies and metadata
+							$this->save_taxonomy( $post_id );
+							$this->save_meta( 0, $post_id );
 						} else {
 							$this->current_blog_id = 0;
 						}
@@ -249,14 +271,10 @@ class Sitewide_Search {
 
 	/**
 	 * Saves taxonomies related to post
-	 * @uses wp_set_object_terms
 	 * @param int $post_id
-	 * @param array $terms
-	 * @param array $term_ids
-	 * @param string $taxonomy
 	 * @return void
 	 */
-	public function save_taxonomy( $post_id, $terms, $term_ids, $taxonomy ) {
+	public function save_taxonomy( $post_id ) {
 		global $wpdb;
 
 		if( $this->settings[ 'archive_blog_id' ] != get_current_blog_id() ) {
@@ -272,24 +290,108 @@ class Sitewide_Search {
 				if(
 					in_array( $post->post_type, $this->settings[ 'post_types' ] )
 					&& $post->post_status == 'publish'
-					&& in_array( $taxonomy, $this->settings[ 'taxonomies' ] )
 					&& ! preg_match( '/^[^0-9]+[0-9]+,[0-9]+$/', $guid )
 				) {
-					foreach( $terms as $i => $term ) {
-						if( is_numeric( $term ) ) {
-							$term = get_term( $term_id, $taxonomy, OBJECT );
-							$terms[ $i ] = $term->name;
-							unset( $term );
-						}
-					}
 
-					$this->current_blog_id = get_current_blog_id();
+					$terms = wp_get_object_terms( $post_id, $this->settings[ 'taxonomies' ] );
 
 					// Make terms available with filters
 					$terms = apply_filters( 'sitewide_search_save_taxonomy', $terms, $post, $this->current_blog_id );
 
-					// Run is there's any terms
-					if( is_array( $terms ) ) {
+					$this->current_blog_id = get_current_blog_id();
+					switch_to_blog( $this->settings[ 'archive_blog_id' ] );
+
+					$copy_id = $wpdb->get_var( $wpdb->prepare(
+						'SELECT `ID` FROM `' . $wpdb->posts . '` WHERE `guid` REGEXP "[^0-9]*%d,%d"',
+						$this->current_blog_id,
+						$post_id
+					) );
+
+					if( $copy_id ) {
+						// Delete old term relationships
+						$wpdb->query( $wpdb->prepare(
+							'DELETE FROM `' . $wpdb->term_relationships . '` WHERE `object_id` = %d',
+							$copy_id
+						) );
+
+						if( is_array( $terms ) ) {
+							// The old way
+							//wp_set_object_terms( $copy_id, $terms, $taxonomy );
+							// The new way ...
+
+							// Used to recount term count
+							$recount = array();
+
+							foreach( $terms as $term ) {
+								$term_info = term_exists( $term->name, $term->taxonomy );
+
+								if( ! $term_info ) {
+									$term_info = wp_insert_term( $term->name, $term->taxonomy );
+								}
+
+								$wpdb->insert( $wpdb->term_relationships, array(
+									'object_id' => $copy_id,
+									'term_taxonomy_id' => $term_info[ 'term_taxonomy_id' ]
+								) );
+
+								if( ! array_key_exists( $term->taxonomy, $recount ) ) {
+									$recount[ $term->taxonomy ] = array();
+								}
+
+								// Add taxonomy terms for counting
+								$recount[ $term->taxonomy ][] = $term_info[ 'term_taxonomy_id' ];
+							}
+
+							// Update term count
+							foreach( $recount as $tax => $ids ) {
+								wp_update_term_count( $ids, $tax );
+							}
+						}
+					}
+
+					restore_current_blog();
+					$this->current_blog_id = 0;
+				}
+			}
+		}
+	}
+
+	/**
+	 * Saves post meta
+	 * @param int|array $meta_id *Not used*
+	 * @param int $post_id
+	 * @return void
+	 */
+	public function save_meta( $meta_id, $post_id ) {
+		global $wpdb;
+
+		if(
+			$this->settings[ 'archive_blog_id' ] != get_current_blog_id()
+			&& $this->settings[ 'meta' ]
+		) {
+			$post = get_post( $post_id, OBJECT );
+
+			if( $post ) {
+				if( property_exists( $post, 'guid' ) ) {
+					$guid = $post->guid;
+				} else {
+					$guid = '';
+				}
+
+				if(
+					in_array( $post->post_type, $this->settings[ 'post_types' ] )
+					&& $post->post_status == 'publish'
+					&& ! preg_match( '/^[^0-9]+[0-9]+,[0-9]+$/', $guid )
+				) {
+					$this->current_blog_id = get_current_blog_id();
+
+					$meta = get_metadata( 'post', $post_id );
+
+					// Make meta available with filters
+					$meta = apply_filters( 'sitewide_search_save_meta', $meta, $post, $this->current_blog_id );
+
+					// Run is there's any meta
+					if( is_array( $meta ) ) {
 						switch_to_blog( $this->settings[ 'archive_blog_id' ] );
 
 						$copy_id = $wpdb->get_var( $wpdb->prepare(
@@ -299,7 +401,32 @@ class Sitewide_Search {
 						) );
 
 						if( $copy_id ) {
-							wp_set_object_terms( $copy_id, $terms, $taxonomy );
+							/*
+							 * Inserting meta with wpdb instead of add_metadata.
+							 * In this way we won't get any trouble with data in
+							 * the wrong place when switching blog and running a
+							 * bunch of actions and filters.
+							 */
+
+							$table = _get_meta_table( 'post' );
+							$column = esc_sql( 'post_id' );
+
+							// First delete all metadata
+							$wpdb->query( $wpdb->prepare(
+								'DELETE FROM `' . $table . '` WHERE `' . $column . '` = %d',
+								$copy_id
+							) );
+
+							// Then insert the originals
+							foreach( $meta as $key => $values ) {
+								foreach( $values as $val ) {
+									$wpdb->insert( $table, array(
+										$column => $copy_id,
+										'meta_key' => $key,
+										'meta_value' => $val
+									) );
+								}
+							}
 						}
 
 						restore_current_blog();
@@ -450,6 +577,7 @@ class Sitewide_Search {
 				|| ( $this->settings[ 'enable_author' ] && $query->is_author )
 			)
 			&& ! $is_forum
+			&& ! is_admin()
 		) {
 			if( $this->current_blog_id != get_current_blog_id() ) {
 				$this->current_blog_id = get_current_blog_id();
@@ -460,7 +588,11 @@ class Sitewide_Search {
 			// was executed. We'll use it as a after_get_posts-action.
 			// We want to restore the blog id to the current blog so we
 			// don't mess up with the headers and so.
-			add_filter( 'posts_results', array( $this, 'after_set_post_query' ) );
+			add_filter( 'posts_results', array( &$this, 'after_set_post_query' ) );
+
+			// Add actions for blog scope during looping
+			add_action( 'loop_start', array( &$this, 'loop_start' ), 10 );
+			add_action( 'loop_end', array( &$this, 'loop_end' ), 10 );
 
 			return $query;
 		}
@@ -474,13 +606,12 @@ class Sitewide_Search {
 	 * @return array
 	 */
 	public function after_set_post_query( $posts ) {
-		global $wpdb;
-		remove_filter( 'posts_results', array( $this, 'after_set_post_query' ) );
+		remove_filter( 'posts_results', array( &$this, 'after_set_post_query' ) );
 
 		foreach( $posts as $i => $post ) {
 			if( preg_match( '/[^0-9]*([0-9]+),([0-9]+)/', $post->guid, $guid ) ) {
-				$post->ID = $guid[ 2 ];
-				$post->blog_id = $guid[ 1 ];
+				$post->ID = intval( $guid[ 2 ] );
+				$post->blog_id = intval( $guid[ 1 ] );
 				$posts[ $i ] = $post;
 			}
 		}
@@ -492,16 +623,104 @@ class Sitewide_Search {
 	}
 
 	/**
-	 *
+	 * Switches to archive blog and adds a the_post action
+	 * @param object $query
+	 * @return void
+	 */
+	public function loop_start( $query ) {
+		remove_action( 'loop_start', array( &$this, 'loop_start' ) );
+
+		if( $this->settings[ 'archive_blog_id' ] && ! $this->current_blog_id ) {
+			$this->current_blog_id = get_current_blog_id();
+			switch_to_blog( $this->settings[ 'archive_blog_id' ] );
+			//global $wpdb;
+			//$wpdb->set_blog_id( $this->settings[ 'archive_blog_id' ] );
+		}
+
+		add_action( 'the_post', array( &$this, 'the_post' ), 10 );
+	}
+
+	/**
+	 * Restores to current blog
+	 * @param object $query
+	 * return void
+	 */
+	public function loop_end( $query ) {
+		remove_action( 'loop_end', array( &$this, 'loop_end' ) );
+		remove_action( 'the_post', array( &$this, 'the_post' ) );
+
+		if( $this->current_blog_id ) {
+			//global $wpdb;
+			//$wpdb->set_blog_id( $this->current_blog_id );
+			$this->current_blog_id = 0;
+			restore_current_blog();
+		}
+	}
+
+	/**
+	 * Switches to post's original blog or restores to current blog
+	 * @param object $post
+	 * @return void
+	 */
+	public function the_post( $post ) {
+		if( is_object( $post ) ) {
+			$blog_id = 0;
+			$post_id = 0;
+
+			if( property_exists( $post, 'blog_id' ) ) {
+				$blog_id = $post->blog_id;
+				$post_id = $post->ID;
+			} elseif( preg_match( '/[^0-9]*([0-9]+),([0-9]+)/', $post->guid, $guid ) ) {
+				$blog_id = $guid[ 1 ];
+				$post_id = $guid[ 2 ];
+			}
+
+			//global $wpdb;
+
+			if( $blog_id && $this->current_blog_id && $blog_id == $this->current_blog_id ) {
+				//$wpdb->set_blog_id( $this->current_blog_id );
+				$this->current_blog_id = 0;
+				restore_current_blog();
+			} elseif( $blog_id ) {
+				restore_current_blog();
+				$this->current_blog_id = get_current_blog_id();
+				switch_to_blog( $blog_id );
+				//$wpdb->set_blog_id( $blog_id );
+			}
+		}
+	}
+
+	/**
+	 * Get original permalink from correct blog
+	 * @param string $permalink
+	 * @param object|int $post
+	 * return string
 	 */
 	public function get_original_permalink( $permalink, $post ) {
-		if( property_exists( $post, 'blog_id' ) ) {
-			return get_blog_permalink( $post->blog_id, $post->ID );
-		} elseif( preg_match( '/[^0-9]*([0-9]+),([0-9]+)/', $post->guid, $guid ) ) {
-			return get_blog_permalink( $guid[ 2 ], $post->ID );
-		} else {
-			return $permalink;
+		if( ! $this->current_blog_id ) {
+			$blog_id = 0;
+			$post_id = 0;
+
+			if( ! is_object( $post ) ) {
+				$post = get_post( $post );
+			}
+
+			if( property_exists( $post, 'blog_id' ) ) {
+				$blog_id = $post->blog_id;
+				$post_id = $post->ID;
+			} elseif( preg_match( '/[^0-9]*([0-9]+),([0-9]+)/', $post->guid, $guid ) ) {
+				$blog_id = $guid[ 1 ];
+				$post_id = $guid[ 2 ];
+			}
+
+			if( $blog_id && $blog_id ) {
+				remove_filter( 'post_link', array( &$this, 'get_original_permalink' ) );
+				$permalink = get_blog_permalink( $blog_id, $post_id );
+				add_filter( 'post_link', array( &$this, 'get_original_permalink' ), 10, 2 );
+			}
 		}
+
+		return $permalink;
 	}
 
 }
